@@ -6,11 +6,18 @@ import (
 	"sync/atomic"
 	"encoding/json"
 	"log"
+	"os"
+	"database/sql"
 	"strings"
+	_ "github.com/google/uuid"
+	_ "github.com/lib/pq"
+	"github.com/joho/godotenv"
+	"github.com/Lynn-Xy/chirpy/internal/database"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -59,10 +66,10 @@ func handlerValidandProfane(w http.ResponseWriter, r *http.Request) {
 			w.Write(data)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(400)
-		w.Write(data)
-		return
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(400)
+	w.Write(data)
+	return
 	}
 	if len(reqBody.Body) > 140 {
 		response := returnError{Error: "Chirp is too long"}
@@ -104,7 +111,18 @@ func handlerValidandProfane(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	cfg := apiConfig{}
+	err1 := godotenv.Load()
+	DB_URL := os.Getenv("DB_URL")
+	if err1 != nil {
+		log.Printf("Error loading .env file: %v", err1)
+	}
+	db, err2 := sql.Open("postgres", DB_URL)
+	if err2 != nil {
+		log.Fatalf("Failed to connect to database: %v", err2)
+	}
+	defer db.Close()
+	dbQuery := database.New(db)
+	cfg := apiConfig{dbQueries: dbQuery}
 	newServerMux := http.NewServeMux()
 	newServer := &http.Server{
 		Addr:    ":8080",
@@ -113,15 +131,15 @@ func main() {
 	newServerMux.Handle("/app/", http.StripPrefix("/app/", cfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
 	newServerMux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(200)
 		w.Write([]byte("OK"))
 	})
 	newServerMux.HandleFunc("GET /admin/metrics", cfg.handlerMetrics)
 	newServerMux.HandleFunc("POST /admin/reset", cfg.handlerReset)
 	newServerMux.HandleFunc("POST /api/validate_chirp", handlerValidandProfane)
 	fmt.Println("Starting server on :8080")
-	err := newServer.ListenAndServe()
-	if err != nil {
-		fmt.Printf("server failed to start: %v", err)
+	err3 := newServer.ListenAndServe()
+	if err3 != nil {
+		fmt.Printf("server failed to start: %v", err3)
 	}
 }
