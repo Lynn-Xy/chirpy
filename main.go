@@ -15,6 +15,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/joho/godotenv"
 	"github.com/Lynn-Xy/chirpy/internal/database"
+	"github.com/Lynn-Xy/chirpy/internal/auth"
 )
 
 type apiConfig struct {
@@ -60,6 +61,7 @@ func (cfg *apiConfig) handlerDeleteAllUsers(w http.ResponseWriter, r *http.Reque
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	type requestBody struct {
 		Email string `json:"email"`
+		Password string `json:"password"`
 	}
 	type responseBody struct {
 		Id uuid.UUID `json:"id"`
@@ -74,7 +76,16 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(400)
 		return
 	}
-	newUser, err2 := cfg.dbQueries.CreateUser(r.Context(), reqBody.Email)
+	hashedPassword, err3 := auth.HashPassword(reqBody.Password)
+	if err3 != nil {
+		log.Printf("Error hashing password: %s", err3)
+		w.WriteHeader(500)
+		return
+	}
+	newUser, err2 := cfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+		Email: reqBody.Email,
+		HashedPassword: hashedPassword,
+	})
 	if err2 != nil {
 		log.Printf("Error creating user in database: %s", err2)
 		w.WriteHeader(500)
@@ -94,6 +105,57 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(201)
+	w.Write(data)
+}
+
+func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
+	type requestBody struct {
+		Password string `json:"password"`
+		Email string `json:"email"`
+	}
+	type responseUser struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email string `json:"email"`
+	}
+	
+	var reqBody requestBody
+	err1 := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err1 != nil {
+		log.Printf("Error decoding JSON: %s", err1)
+		w.WriteHeader(400)
+		return
+	}
+
+	user, err2 := cfg.dbQueries.GetUserByEmail(r.Context(), reqBody.Email)
+	if err2 != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"Incorrect email or password"}`))
+		return
+	}
+	match, err3 := auth.CheckPasswordHash(reqBody.Password, user.HashedPassword)
+	if err3 != nil || !match {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"Incorrect email or password"}`))
+		return
+	}
+	response := responseUser{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+	data, err4 := json.Marshal(response)
+	if err4 != nil {
+		log.Printf("Error marshalling JSON: %s", err4)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(200)
 	w.Write(data)
 }
 
@@ -290,6 +352,7 @@ func main() {
 	newServerMux.HandleFunc("GET /admin/metrics", cfg.handlerMetrics)
 	newServerMux.HandleFunc("POST /admin/reset", cfg.handlerDeleteAllUsers)
 	newServerMux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
+	newServerMux.HandleFunc("POST /api/login", cfg.handlerUserLogin)
 	newServerMux.HandleFunc("POST /api/chirps", cfg.handlerPublishChirp)
 	newServerMux.HandleFunc("GET /api/chirps", cfg.handlerGetAllChirps)
 	newServerMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
