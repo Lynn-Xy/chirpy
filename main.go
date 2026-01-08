@@ -22,6 +22,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries *database.Queries
 	Platform string
+	JWTSecret string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -112,12 +113,14 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 	type requestBody struct {
 		Password string `json:"password"`
 		Email string `json:"email"`
+		Expiration time.Duration `json:"expires_in_seconds,omitempty"`
 	}
 	type responseUser struct {
 		ID uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email string `json:"email"`
+		Token string `json:"token,omitempty"`
 	}
 	
 	var reqBody requestBody
@@ -147,6 +150,7 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: "",
 	}
 	data, err4 := json.Marshal(response)
 	if err4 != nil {
@@ -328,6 +332,7 @@ func main() {
 	}
 	DB_URL := os.Getenv("DB_URL")
 	Plat := os.Getenv("PLATFORM")
+	JWT_Secret := os.Getenv("JWT_SECRET")
 	db, err2 := sql.Open("postgres", DB_URL)
 	if err2 != nil {
 		log.Fatalf("Failed to connect to database: %v", err2)
@@ -337,6 +342,7 @@ func main() {
 	cfg := apiConfig{
 		dbQueries: dbQuery,
 		Platform:  Plat,
+		JWTSecret: JWT_Secret,
 	}
 	newServerMux := http.NewServeMux()
 	newServer := &http.Server{

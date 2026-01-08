@@ -6,6 +6,8 @@ import (
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"time"
+	"net/http"
+	"errors"
 )
 
 func HashPassword(password string) (string, error) {
@@ -61,4 +63,19 @@ func ValidateJWT(tokenString, secretKey string) (uuid.UUID, error) {
 		log.Printf("Invalid JWT token")
 		return uuid.Nil, err
 	}
+}
+
+func GetBearerToken(header http.Header) (string, error) {
+	authHeader := header.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("Authorization header missing")
+	}
+	var token string
+	_, err := fmt.Sscanf(authHeader, "Bearer %s", &token)
+	if err != nil {
+		log.Printf("Error extracting bearer token: %s", err)
+		return "", err
+	}
+
+	return token, nil
 }
