@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"context"
+	"sort"
 	"os"
 	"database/sql"
 	"strings"
@@ -23,6 +24,7 @@ type apiConfig struct {
 	dbQueries *database.Queries
 	Platform string
 	JWTSecret string
+	PolkaKey string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -69,6 +71,7 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		Created_at time.Time `json:"created_at"`
 		Updated_at time.Time `json:"updated_at"`
 		Email string `json:"email"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 	var reqBody requestBody
 	err1 := json.NewDecoder(r.Body).Decode(&reqBody)
@@ -97,6 +100,7 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		Created_at: newUser.CreatedAt,
 		Updated_at: newUser.UpdatedAt,
 		Email: newUser.Email,
+		IsChirpyRed: newUser.IsChirpyRed,
 	}
 	data, err3 := json.Marshal(response)
 	if err3 != nil {
@@ -162,12 +166,14 @@ func (cfg *apiConfig) handlerUpdateUserInfo(w http.ResponseWriter, r *http.Reque
 		Created_at time.Time `json:"created_at"`
 		Updated_at time.Time `json:"updated_at"`
 		Email string `json:"email"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 	response := responseBody{
 		Id: updatedUser.ID,
 		Created_at: updatedUser.CreatedAt,
 		Updated_at: updatedUser.UpdatedAt,
 		Email: updatedUser.Email,
+		IsChirpyRed: updatedUser.IsChirpyRed,
 	}
 	data, err3 := json.Marshal(response)
 	if err3 != nil {
@@ -193,6 +199,7 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 		AccessToken string `json:"token,omitempty"`
 		RefreshToken string `json:"refresh_token"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 	
 	var reqBody requestBody
@@ -245,6 +252,7 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 		AccessToken: jwtToken,
 		RefreshToken: refreshToken,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	data, err4 := json.Marshal(response)
 	if err4 != nil {
@@ -333,6 +341,38 @@ func (cfg *apiConfig) handlerGetAllChirps(w http.ResponseWriter, r *http.Request
 			UserID:    chirp.UserID,
 		})
 	}
+	quierieParams := r.URL.Query()
+	userIDParam := quierieParams.Get("author_id")
+	sortParam := quierieParams.Get("sort")
+	if userIDParam != "" {
+		userID, err := uuid.Parse(userIDParam)
+		if err != nil {
+			log.Printf("Error parsing user ID: %s", err)
+			w.WriteHeader(400)
+			return
+		}
+		chirpsByUser, err := cfg.dbQueries.GetChirpsByUser(r.Context(), userID)
+		if err != nil {
+			log.Printf("Error getting chirps by user: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+		response = make([]chirpResponse, 0, len(chirpsByUser))
+		for _, chirp := range chirpsByUser {
+			response = append(response, chirpResponse{
+				ID:        chirp.ID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:	  chirp.Body,
+				UserID:    chirp.UserID,
+			})
+		}
+	}
+	if sortParam == "desc" {
+		sort.SliceStable(response, func(i, j int) bool {
+			return response[i].CreatedAt.After(response[j].CreatedAt)
+		})
+	}
 	data, err := json.Marshal(response)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
@@ -342,7 +382,8 @@ func (cfg *apiConfig) handlerGetAllChirps(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write(data)
-}
+	return
+	}
 
 func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 	type chirpResponse struct {
@@ -544,6 +585,44 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(204)
 }
 
+func (cfg *apiConfig) handlerPolkaWebhook(w http.ResponseWriter, r *http.Request) {
+	key, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		log.Printf("Error getting API Key: %v", err)
+		w.WriteHeader(401)
+	}
+	if key != cfg.PolkaKey {
+		w.WriteHeader(401)
+		return
+	}
+	type Data struct {
+		UserID uuid.UUID `json:"user_id"`
+	}
+	type polkaWebhookRequest struct {
+		Event string `json:"event"`
+		Data Data `json:"data"`
+	}
+	var reqBody polkaWebhookRequest
+	err = json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		log.Printf("Error decoding JSON: %s", err)
+		w.WriteHeader(400)
+		return
+	}
+	if reqBody.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+	_, err = cfg.dbQueries.UpgradeUserToChirpyRed(r.Context(), reqBody.Data.UserID)
+	if err != nil {
+		log.Printf("Error upgrading user to Chirpy Red: %s", err)
+		w.WriteHeader(404)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(204)
+}
+
 func main() {
 	err1 := godotenv.Load()
 	if err1 != nil {
@@ -552,6 +631,7 @@ func main() {
 	DB_URL := os.Getenv("DB_URL")
 	Plat := os.Getenv("PLATFORM")
 	JWT_Secret := os.Getenv("JWT_SECRET")
+	Polka_key := os.Getenv("POLKA_KEY")
 	db, err2 := sql.Open("postgres", DB_URL)
 	if err2 != nil {
 		log.Fatalf("Failed to connect to database: %v", err2)
@@ -562,6 +642,7 @@ func main() {
 		dbQueries: dbQuery,
 		Platform:  Plat,
 		JWTSecret: JWT_Secret,
+		PolkaKey: Polka_key,
 	}
 	newServerMux := http.NewServeMux()
 	newServer := &http.Server{
@@ -585,6 +666,7 @@ func main() {
 	newServerMux.HandleFunc("GET /api/chirps", cfg.handlerGetAllChirps)
 	newServerMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
 	newServerMux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handlerDeleteChirp)
+	newServerMux.HandleFunc("POST /api/polka/webhooks", cfg.handlerPolkaWebhook)
 	fmt.Println("Starting server on :8080")
 	err3 := newServer.ListenAndServe()
 	if err3 != nil {

@@ -89,3 +89,19 @@ func MakeRefreshToken() (string) {
 	hex := hex.EncodeToString(bytes)
 	return hex
 }
+
+func GetAPIKey(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("Authorization header missing")
+	}
+	var key string
+	_, err := fmt.Sscanf(authHeader, "ApiKey %s", &key)
+	if err != nil {
+		log.Printf("Error extracting api key: %s", err)
+		return "", err
+	}
+
+	return key, nil
+
+}

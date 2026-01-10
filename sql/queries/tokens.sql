@@ -4,7 +4,7 @@ VALUES ($1, NOW(), NOW(), $2, $3, NULL)
 RETURNING *;
 
 -- name: GetUserFromRefreshToken :one
-SELECT u.id, u.created_at, u.updated_at, u.email, u.hashed_password
+SELECT u.id, u.created_at, u.updated_at, u.email, u.hashed_password, u.is_chirpy_red
 FROM users u
 JOIN refresh_tokens rt ON u.id = rt.user_id
 WHERE rt.token = $1 AND (rt.revoked_at IS NULL AND rt.expires_at > NOW());
