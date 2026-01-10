@@ -109,6 +109,78 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	w.Write(data)
 }
 
+func (cfg *apiConfig) handlerUpdateUserInfo(w http.ResponseWriter, r *http.Request) {
+	type requestBody struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+	var reqBody requestBody
+	err1 := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err1 != nil {
+		log.Printf("Error decoding JSON: %s", err1)
+		w.WriteHeader(400)
+		return
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting bearer token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+	userIDFromToken, err := auth.ValidateJWT(token, cfg.JWTSecret)
+	if err != nil {
+		log.Printf("Error validating JWT: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+	updatedUser, err := cfg.dbQueries.UpdateUserEmail(r.Context(), database.UpdateUserEmailParams{
+		ID: userIDFromToken,
+		Email: reqBody.Email,
+	})
+	if err != nil {
+		log.Printf("Error updating user email in database: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	hash, err := auth.HashPassword(reqBody.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	err = cfg.dbQueries.UpdatePasswordHash(r.Context(), database.UpdatePasswordHashParams{
+		ID: userIDFromToken,
+		HashedPassword: hash,
+	})
+	if err != nil {
+		log.Printf("Error updating user password in database: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	type responseBody struct {
+		Id uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Email string `json:"email"`
+	}
+	response := responseBody{
+		Id: updatedUser.ID,
+		Created_at: updatedUser.CreatedAt,
+		Updated_at: updatedUser.UpdatedAt,
+		Email: updatedUser.Email,
+	}
+	data, err3 := json.Marshal(response)
+	if err3 != nil {
+		log.Printf("Error marshalling JSON: %s", err3)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(200)
+	w.Write(data)
+}
+
+
 func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 	type requestBody struct {
 		Password string `json:"password"`
@@ -432,6 +504,46 @@ func (cfg *apiConfig) handlerPublishChirp(w http.ResponseWriter, r *http.Request
 	w.Write(data)
 }
 
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	chirpIDStr := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		log.Printf("Error parsing chirp ID: %s", err)
+		w.WriteHeader(400)
+		return
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting bearer token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+	userIDFromToken, err := auth.ValidateJWT(token, cfg.JWTSecret)
+	if err != nil {
+		log.Printf("Error validating JWT: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+	
+	chirp, err := cfg.dbQueries.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		log.Printf("Error getting chirp: %s", err)
+		w.WriteHeader(404)
+		return
+	}
+	if chirp.UserID != userIDFromToken {
+		w.WriteHeader(403)
+		return
+	}
+	err = cfg.dbQueries.DeleteChirp(r.Context(), chirpID)
+	if err != nil {
+		log.Printf("Error deleting chirp: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(204)
+}
+
 func main() {
 	err1 := godotenv.Load()
 	if err1 != nil {
@@ -465,12 +577,14 @@ func main() {
 	newServerMux.HandleFunc("GET /admin/metrics", cfg.handlerMetrics)
 	newServerMux.HandleFunc("POST /admin/reset", cfg.handlerDeleteAllUsers)
 	newServerMux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
+	newServerMux.HandleFunc("PUT /api/users", cfg.handlerUpdateUserInfo)
 	newServerMux.HandleFunc("POST /api/login", cfg.handlerUserLogin)
 	newServerMux.HandleFunc("POST /api/refresh", cfg.handlerValidateRefreshToken)
 	newServerMux.HandleFunc("POST /api/revoke", cfg.handlerRevokeRefreshToken)
 	newServerMux.HandleFunc("POST /api/chirps", cfg.handlerPublishChirp)
 	newServerMux.HandleFunc("GET /api/chirps", cfg.handlerGetAllChirps)
 	newServerMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
+	newServerMux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handlerDeleteChirp)
 	fmt.Println("Starting server on :8080")
 	err3 := newServer.ListenAndServe()
 	if err3 != nil {
